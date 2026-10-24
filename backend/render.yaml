@@ -1,0 +1,22 @@
+# نشر على Render (Blueprint). ⚠️ ماجرّبتوش فعلياً — راجعه عند أول نشر.
+services:
+  - type: web
+    name: real-estate-api
+    runtime: node
+    plan: free
+    # --include=dev: عشان typescript و prisma CLI مطلوبين وقت الـ build
+    # migrate deploy بيشتغل وقت الـ build على الـ DIRECT_URL
+    buildCommand: npm ci --include=dev && npx prisma generate && npx prisma migrate deploy && npm run build
+    startCommand: node dist/server.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL # Neon pooled
+        sync: false
+      - key: DIRECT_URL # Neon direct (للـ migrations)
+        sync: false
+      - key: CORS_ORIGIN
+        value: "*"

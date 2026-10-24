@@ -1,0 +1,432 @@
+// ============================================================
+//  تطبيق العقارات المحلي — Prisma schema (Neon PostgreSQL)
+//  Phase 2 / Step 1
+// ============================================================
+
+generator client {
+  provider   = "prisma-client-js"
+  // بدون Rust engine: بنستخدم driver adapter (pg). أخف وأسهل في النشر على Render.
+  engineType = "client"
+}
+
+datasource db {
+  provider  = "postgresql"
+  // Neon: الـ URL المُجمَّع (-pooler) للتطبيق، والـ direct للـ migrations.
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ------------------------------------------------------------
+//  Enums
+// ------------------------------------------------------------
+
+enum AccountType {
+  INDIVIDUAL // فرد
+  OFFICE // مكتب / وسيط
+  DEVELOPER // مطور عقاري
+}
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum VerificationStatus {
+  NONE
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum PropertyType {
+  APARTMENT // شقة
+  VILLA // فيلا
+  SHOP // محل
+  OFFICE // مكتب
+  LAND // أرض
+}
+
+enum ListingType {
+  SALE // بيع
+  RENT // إيجار
+}
+
+enum FinishingLevel {
+  CORE_SHELL // على الطوب
+  SEMI_FINISHED // نص تشطيب
+  SUPER_LUX // سوبر لوكس
+  ULTRA_SUPER_LUX // ألترا سوبر لوكس
+}
+
+enum PaymentMethod {
+  CASH // كاش
+  INSTALLMENT // تقسيط
+}
+
+enum PropertyStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  CLOSED // اتباع / اتأجر
+}
+
+enum InspectionStatus {
+  PENDING // قيد الانتظار
+  CONFIRMED // تم التأكيد
+  RESCHEDULED // موعد بديل مقترح
+  REJECTED // رفضه المعلن => استرداد كامل
+  EXPIRED // الطرف اللي عليه الدور ماردّش في المهلة => استرداد كامل (المعلن) / حسب الإعداد (المشتري على موعد بديل)
+  CANCELLED // أُلغي: المشتري قبل الرد ⇒ استرداد، المشتري بعد التأكيد ⇒ بلا استرداد، المعلن ⇒ استرداد
+}
+
+enum InspectionSlot {
+  MORNING // صباحاً 10–12
+  NOON // ظهراً 1–3
+  EVENING // مساءً 5–8
+}
+
+enum PaymentType {
+  INSPECTION_FEE
+  REFUND
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+}
+
+enum RefundReason {
+  OWNER_REJECTED // المعلن رفض الطلب
+  OWNER_NO_RESPONSE // المعلن ماردّش في المهلة
+  OWNER_CANCELLED_AFTER_CONFIRM // المعلن ألغى بعد ما أكّد
+  BUYER_CANCELLED_BEFORE_RESPONSE // المشتري ألغى قبل رد المعلن
+  BUYER_DECLINED_ALTERNATIVE // المشتري رفض الموعد البديل
+  BUYER_ALTERNATIVE_EXPIRED // المشتري ماردّش على الموعد البديل في المهلة
+}
+
+enum RefundDestination {
+  WALLET
+  ORIGINAL_METHOD
+}
+
+enum DealStatus {
+  PENDING
+  COMPLETED
+  CANCELLED
+}
+
+enum NotificationType {
+  INSPECTION_REQUESTED
+  INSPECTION_CONFIRMED
+  INSPECTION_RESCHEDULED
+  INSPECTION_REJECTED
+  INSPECTION_EXPIRED
+  INSPECTION_CANCELLED
+  REFUND_ISSUED
+  SYSTEM
+}
+
+// ------------------------------------------------------------
+//  المستخدمون
+// ------------------------------------------------------------
+
+model User {
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  phone              String             @unique
+  email              String?            @unique
+  passwordHash       String? // الـ Auth لسه محتاج قرار (OTP / Password)
+  name               String
+  accountType        AccountType        @default(INDIVIDUAL)
+  role               UserRole           @default(USER)
+  verificationStatus VerificationStatus @default(NONE)
+  verifiedAt         DateTime?
+  isActive           Boolean            @default(true)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  business           BusinessProfile?
+  properties         Property[]
+  projects           Project[]
+  favorites          Favorite[]
+  inspectionsAsBuyer InspectionRequest[] @relation("InspectionBuyer")
+  inspectionsAsOwner InspectionRequest[] @relation("InspectionOwner")
+  inspectionEvents   InspectionEvent[]
+  payments           Payment[]
+  dealsAsBuyer       Deal[]              @relation("DealBuyer")
+  dealsAsSeller      Deal[]              @relation("DealSeller")
+  notifications      Notification[]
+}
+
+/// بيانات المكتب / المطور (اختياري — للأفراد مش مطلوب).
+model BusinessProfile {
+  userId        String   @id @db.Uuid
+  displayName   String
+  logoUrl       String?
+  bio           String?
+  licenseNumber String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ------------------------------------------------------------
+//  الأحياء والمشاريع
+// ------------------------------------------------------------
+
+model District {
+  id        Int     @id @default(autoincrement())
+  name      String  @unique
+  sortOrder Int     @default(0)
+  isActive  Boolean @default(true)
+
+  properties Property[]
+  projects   Project[]
+}
+
+model Project {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ownerId      String   @db.Uuid
+  districtId   Int?
+  name         String
+  description  String?
+  coverUrl     String?
+  unitsCount   Int      @default(0)
+  deliveryYear Int?
+  isReadyNow   Boolean  @default(false) // "استلام فوري"
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  owner      User       @relation(fields: [ownerId], references: [id])
+  district   District?  @relation(fields: [districtId], references: [id])
+  properties Property[]
+
+  @@index([ownerId])
+}
+
+// ------------------------------------------------------------
+//  العقارات
+// ------------------------------------------------------------
+
+model Property {
+  id             String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ownerId        String          @db.Uuid
+  projectId      String?         @db.Uuid
+  districtId     Int
+  title          String
+  description    String?
+  type           PropertyType
+  listingType    ListingType
+  /// بيع: السعر الكلي — إيجار: الإيجار الشهري (ج.م)
+  price          Decimal         @db.Decimal(14, 2)
+  area           Int // م²
+  beds           Int             @default(0)
+  baths          Int             @default(0)
+  /// null للأراضي
+  finishing      FinishingLevel?
+  paymentMethods PaymentMethod[]
+  features       String[]
+  status         PropertyStatus  @default(DRAFT)
+  isFeatured     Boolean         @default(false)
+  isVerified     Boolean         @default(false) // عقار موثّق (بمراجعة المنصة)
+  viewsCount     Int             @default(0)
+  publishedAt    DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  owner       User                @relation(fields: [ownerId], references: [id])
+  project     Project?            @relation(fields: [projectId], references: [id])
+  district    District            @relation(fields: [districtId], references: [id])
+  images      PropertyImage[]
+  favorites   Favorite[]
+  inspections InspectionRequest[]
+  deals       Deal[]
+
+  @@index([status, listingType, type, districtId])
+  @@index([districtId, price])
+  @@index([ownerId, status])
+  @@index([projectId])
+  @@index([status, publishedAt(sort: Desc)])
+}
+
+model PropertyImage {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  propertyId String   @db.Uuid
+  url        String
+  position   Int      @default(0) // 0 = الغلاف
+  createdAt  DateTime @default(now())
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@index([propertyId, position])
+}
+
+model Favorite {
+  userId     String   @db.Uuid
+  propertyId String   @db.Uuid
+  createdAt  DateTime @default(now())
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@id([userId, propertyId])
+  @@index([propertyId])
+}
+
+// ------------------------------------------------------------
+//  المعاينات المدفوعة
+// ------------------------------------------------------------
+
+model InspectionRequest {
+  id     String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  /// رقم تسلسلي للعرض: "IR-<number>"
+  number Int    @unique @default(autoincrement())
+
+  propertyId String @db.Uuid
+  buyerId    String @db.Uuid
+  /// صاحب الإعلان وقت الطلب (للاستعلام السريع عن "الطلبات الواردة")
+  ownerId    String @db.Uuid
+
+  status InspectionStatus @default(PENDING)
+
+  /// الموعد الحالي (بيتغير لو المعلن اقترح موعد بديل)
+  visitDate          DateTime       @db.Date
+  slot               InspectionSlot
+  /// الموعد اللي طلبه المشتري أصلاً (للسجل)
+  requestedVisitDate DateTime       @db.Date
+  requestedSlot      InspectionSlot
+
+  feeAmount        Decimal   @db.Decimal(10, 2)
+  /// آخر ميعاد لرد الطرف اللي عليه الدور: المعلن وهو PENDING، والمشتري وهو RESCHEDULED.
+  /// (مهلة الرد أو بداية الموعد — أيهما أقرب). بعده: EXPIRED + استرداد حسب السياسة.
+  responseDeadline DateTime
+  respondedAt      DateTime?
+  confirmedAt      DateTime?
+  closedAt         DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  property Property          @relation(fields: [propertyId], references: [id])
+  buyer    User              @relation("InspectionBuyer", fields: [buyerId], references: [id])
+  owner    User              @relation("InspectionOwner", fields: [ownerId], references: [id])
+  payments Payment[]
+  events   InspectionEvent[]
+  deal     Deal?
+
+  @@index([buyerId, status])
+  @@index([ownerId, status])
+  @@index([propertyId])
+  /// لشغل الـ cron اللي بيقفل الطلبات المنتهية
+  @@index([status, responseDeadline])
+}
+
+/// سجل تغيّر الحالات (Audit trail) — مهم لأي نزاع على الرسوم/الاسترداد.
+model InspectionEvent {
+  id                  String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  inspectionRequestId String            @db.Uuid
+  actorId             String?           @db.Uuid // null = النظام (مثلاً انتهاء المهلة)
+  fromStatus          InspectionStatus?
+  toStatus            InspectionStatus
+  note                String?
+  createdAt           DateTime          @default(now())
+
+  inspectionRequest InspectionRequest @relation(fields: [inspectionRequestId], references: [id], onDelete: Cascade)
+  actor             User?             @relation(fields: [actorId], references: [id])
+
+  @@index([inspectionRequestId, createdAt])
+}
+
+// ------------------------------------------------------------
+//  المدفوعات والاسترداد
+// ------------------------------------------------------------
+
+model Payment {
+  id                  String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId              String        @db.Uuid
+  inspectionRequestId String?       @db.Uuid
+  type                PaymentType
+  amount              Decimal       @db.Decimal(10, 2)
+  currency            String        @default("EGP")
+  status              PaymentStatus @default(PENDING)
+
+  provider       String?
+  providerRef    String?
+  /// يمنع الدفع/الاسترداد المزدوج لو الطلب اتبعت مرتين
+  idempotencyKey String  @unique
+
+  /// للاسترداد فقط:
+  refundOfId        String?            @db.Uuid
+  refundReason      RefundReason?
+  refundDestination RefundDestination?
+
+  createdAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  user              User               @relation(fields: [userId], references: [id])
+  inspectionRequest InspectionRequest? @relation(fields: [inspectionRequestId], references: [id])
+  refundOf          Payment?           @relation("PaymentRefunds", fields: [refundOfId], references: [id])
+  refunds           Payment[]          @relation("PaymentRefunds")
+
+  @@unique([provider, providerRef])
+  @@index([inspectionRequestId])
+  @@index([userId, createdAt(sort: Desc)])
+}
+
+// ------------------------------------------------------------
+//  الصفقات (الأساس لخصم الرسوم من السعر + عمولة المنصة)
+// ------------------------------------------------------------
+
+model Deal {
+  id                  String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  propertyId          String     @db.Uuid
+  buyerId             String     @db.Uuid
+  sellerId            String     @db.Uuid
+  inspectionRequestId String?    @unique @db.Uuid
+  agreedPrice         Decimal    @db.Decimal(14, 2)
+  /// رسوم المعاينة اللي اتخصمت من السعر النهائي
+  inspectionCredit    Decimal    @default(0) @db.Decimal(10, 2)
+  /// TODO: قيمة/نسبة العمولة لسه ما اتحددتش
+  commissionAmount    Decimal?   @db.Decimal(14, 2)
+  status              DealStatus @default(PENDING)
+  closedAt            DateTime?
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+
+  property          Property           @relation(fields: [propertyId], references: [id])
+  buyer             User               @relation("DealBuyer", fields: [buyerId], references: [id])
+  seller            User               @relation("DealSeller", fields: [sellerId], references: [id])
+  inspectionRequest InspectionRequest? @relation(fields: [inspectionRequestId], references: [id])
+
+  @@index([propertyId])
+  @@index([buyerId])
+  @@index([sellerId])
+}
+
+// ------------------------------------------------------------
+//  إشعارات + إعدادات
+// ------------------------------------------------------------
+
+model Notification {
+  id        String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String           @db.Uuid
+  type      NotificationType
+  title     String
+  body      String
+  data      Json?
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt(sort: Desc)])
+}
+
+/// إعدادات قابلة للتغيير من غير نشر جديد (رسوم المعاينة، مهلة الرد…)
+model Setting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
