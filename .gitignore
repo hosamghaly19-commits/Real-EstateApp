@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+.dart_tool/
+build/
+*.iml
+.idea/
+.DS_Store
+pubspec.lock
